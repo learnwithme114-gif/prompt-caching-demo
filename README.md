@@ -1,30 +1,33 @@
 # 🏋️ Prompt Caching Demo — FastAPI + LangGraph + OpenAI
 
-A minimal FastAPI app that demonstrates **OpenAI prompt caching** vs no caching
-using LangGraph agents. Built for a YouTube tutorial showing real latency, token,
-and cost differences side by side.
+Demonstrates **OpenAI prompt caching** in a LangGraph ReAct agent using FastAPI.
+Two identical agents — one caches, one doesn't. One line of difference.
 
 ---
 
-## What This Demo Shows
+## The Result
 
 | | No-Cache Agent | Cached Agent |
 |---|---|---|
-| `request_id` position | **TOP** of system prompt | **BOTTOM** of system prompt |
-| Cache hit after 1st call | ❌ Prefix changes every call | ✅ Prefix identical every call |
-| `cached_tokens` | ~0 | ~83% of prompt tokens |
-| Cost per call | Full price | ~49% cheaper |
-| Latency | Baseline | ~10–15% faster |
+| Session timestamp position | **TOP** of system prompt | not in system prompt |
+| cached_tokens per call | 0 | ~1920 (98%) |
+| Cost per call | ~$0.000395 | ~$0.000270 |
+| **Cost saving** | — | **~32% cheaper** |
 
-**The entire lesson in one line:**
+---
+
+## The One Difference
 
 ```python
-# ❌ No-cache — UUID at TOP breaks the prefix → cache miss every call
-system_prompt = f"[request_id: {request_id}]\n\n{BASE_PROMPT}"
+# ❌ no_cache_agent.py — timestamp at TOP → new prefix every call → cache miss
+timestamp     = datetime.now().isoformat()
+system_prompt = f"[session: {timestamp}]\n\n{BASE_PROMPT}"
 
-# ✅ Cached — UUID at BOTTOM, static prefix intact → cache hit every call
-system_prompt = f"{BASE_PROMPT}\n\n[request_id: {request_id}]"
+# ✅ cached_agent.py — BASE_PROMPT is the full system prompt → identical every call → cache hit
+system_prompt = BASE_PROMPT
 ```
+
+**Rule: static content first, dynamic content last (or in the user message).**
 
 ---
 
@@ -32,12 +35,12 @@ system_prompt = f"{BASE_PROMPT}\n\n[request_id: {request_id}]"
 
 ```
 prompt-caching-demo/
-├── main.py                      # FastAPI app + all endpoints
+├── main.py                  ← FastAPI app: /chat/no-cache, /chat/with-cache, /warmup, /benchmark
 ├── agents/
 │   ├── __init__.py
-│   ├── shared_prompt.py         # BASE_PROMPT used by both agents
-│   ├── no_cache_agent.py        # ❌ UUID injected at TOP → cache miss
-│   └── cached_agent.py          # ✅ UUID injected at BOTTOM → cache hit
+│   ├── shared_prompt.py     ← BASE_PROMPT (~1950 tokens) used by both agents
+│   ├── no_cache_agent.py    ← ❌ timestamp at TOP → cache miss every call
+│   └── cached_agent.py      ← ✅ static system prompt → cache hit every call
 ├── .env.example
 ├── requirements.txt
 └── README.md
@@ -47,131 +50,113 @@ prompt-caching-demo/
 
 ## Prerequisites
 
-- Python 3.10 or higher
-- VS Code
+- Python 3.10+
 - OpenAI API key → https://platform.openai.com/api-keys
 
 ---
 
-## Setup in VS Code — Step by Step
+## Setup
 
-### 1. Open the project in VS Code
-
+### 1. Clone and open in VS Code
+```bash
+git clone <your-repo>
+cd prompt-caching-demo
 ```
-File → Open Folder → select prompt-caching-demo
-```
 
-Open the integrated terminal: `Terminal → New Terminal` (or `` Ctrl+` ``)
-
----
-
-### 2. Create and activate a virtual environment
-
+### 2. Create virtual environment
 ```bash
 python3 -m venv venv
 ```
 
-**Activate (Mac/Linux):**
+**Activate — Mac/Linux:**
 ```bash
 source venv/bin/activate
 ```
 
-**Activate (Windows PowerShell):**
+**Activate — Windows PowerShell:**
 ```bash
 .\venv\Scripts\Activate.ps1
 ```
 
-You should see `(venv)` at the start of your terminal prompt.
-
----
-
 ### 3. Install dependencies
-
 ```bash
 pip install -r requirements.txt
 ```
 
-Verify openai installed correctly:
-```bash
-python -c "import openai; print(openai.__version__)"
-```
-
----
-
-### 4. Set up your .env file
-
+### 4. Configure environment
 ```bash
 cp .env.example .env
 ```
 
-Open `.env` and fill in:
+Edit `.env`:
 ```env
 OPENAI_API_KEY=sk-your-key-here
 MODEL_NAME=gpt-4o-mini
 ```
 
----
-
-### 5. Run the server
-
+### 5. Start the server
 ```bash
 python -m uvicorn main:app --reload
 ```
 
 > ⚠️ Always use `python -m uvicorn` (not just `uvicorn`) to ensure the venv Python is used.
 
-You should see:
+Open Swagger UI: **http://localhost:8000/docs**
+
+---
+
+## Running the Demo
+
+### Step 1 — Warm the cache
 ```
-INFO:     Uvicorn running on http://127.0.0.1:8000
-INFO:     Application startup complete.
+GET /warmup
+```
+Calls the cached agent 3 times. Watch the terminal — `cached_tokens` goes from 0 → 1920 after the first call. Cache is now hot.
+
+### Step 2 — Compare individual calls
+```
+POST /chat/with-cache   {"message": "Should I do cardio before or after weights?"}
+POST /chat/no-cache     {"message": "Should I do cardio before or after weights?"}
+```
+Watch `cached_tokens` in the response — 1920 vs 0.
+
+### Step 3 — Run the benchmark
+```
+GET /benchmark
+```
+Runs no-cache agent 5x first, then cached agent 5x. Returns full cost and latency comparison.
+
+Expected output:
+```json
+{
+  "no_cache":   { "avg_cached_tokens": 0,    "avg_cost_per_call_usd": 0.000395 },
+  "with_cache": { "avg_cached_tokens": 1920, "avg_cost_per_call_usd": 0.000270 },
+  "improvement": {
+    "cached_tokens_pct": 98.4,
+    "cost_saving_pct": 31.8,
+    "projected_monthly_saving_usd_at_10k_calls": 37.68
+  }
+}
 ```
 
 ---
 
----
+## How OpenAI Prompt Caching Works
 
-## Reading the Terminal Logs
-
-While the server runs, the terminal shows each call:
-
-```
-13:42:01 [INFO] → /chat/no-cache   latency=2398ms  prompt=1221  cached=0
-13:42:03 [INFO] → /chat/with-cache latency=2060ms  prompt=1222  cached=1024
-13:42:10 [INFO] ▶ benchmark complete  latency=14.0%  cached=83.8%  cost=49.0%  monthly=$72.00
-```
+- Automatic — no API flag or configuration needed
+- Activates when prompt prefix is **identical** and **>1024 tokens**
+- Cached tokens billed at **50% of normal input price**
+- Cache entries evict after ~5–10 minutes of inactivity
+- In a multi-node LangGraph agent, every node that calls the LLM benefits → savings multiply
 
 ---
-
-## How Caching Works
-
-```
-No-cache agent — cache miss every call:
-  Request → [request_id: abc123]\n\n{HUGE SYSTEM PROMPT} + user message
-  Request → [request_id: xyz789]\n\n{HUGE SYSTEM PROMPT} + user message
-             ↑ prefix changes → OpenAI can't cache → full cost every time
-
-Cached agent — cache hit from call 2 onwards:
-  Request → {HUGE SYSTEM PROMPT}\n\n[request_id: abc123] + user message
-  Request → {HUGE SYSTEM PROMPT}\n\n[request_id: xyz789] + user message
-             ↑ prefix identical → OpenAI caches it → 50% cheaper + faster
-```
-
-OpenAI caches automatically when:
-1. Prompt is longer than **1024 tokens** ✓
-2. The **prefix is byte-for-byte identical** across calls ✓
-3. Same model ✓
-4. Cache entry is recent (evicted after ~5 min of inactivity)
-
----
-
 
 ## Troubleshooting
 
 | Problem | Fix |
 |---|---|
-| `ModuleNotFoundError: No module named 'openai'` | Use `python -m uvicorn` not `uvicorn` |
-| `AuthenticationError` | Check `OPENAI_API_KEY` in `.env` |
-| `cached_tokens` always 0 | Prompt may be under 1024 tokens — use `gpt-4o-mini` |
+| `ModuleNotFoundError: openai` | Use `python -m uvicorn` not `uvicorn` |
+| `AuthenticationError` | Check `OPENAI_API_KEY` in `.env` — no extra spaces or quotes |
+| `cached_tokens` always 0 | Run `/warmup` first; prompt must be >1024 tokens |
 | Port already in use | `python -m uvicorn main:app --reload --port 8001` |
-| `.env` not loading | Make sure `.env` is in the same folder as `main.py` |
-| `invalid model ID` | Check exact model name — use `gpt-4o-mini` or `gpt-4.1-mini` |
+| `.env` not loading | Ensure `.env` is in same folder as `main.py` |

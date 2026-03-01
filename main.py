@@ -18,7 +18,18 @@ log = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Prompt Caching Demo",
-    description="Demonstrates OpenAI prompt caching vs no caching using LangGraph",
+    description="""Demonstrates OpenAI prompt caching vs no caching using a LangGraph ReAct agent.
+
+**For a clean cache comparison use general fitness questions** (answered directly from the system prompt):
+- "Should I do cardio before or after weights?"
+- "How much protein do I need per day?"
+- "What is progressive overload?"
+
+**Tool-calling questions** (e.g. "how many calories in salmon?") trigger 2 LLM calls per request.
+Call 2 always hits cache on both agents because the conversation history grows long enough
+for OpenAI to find a matching prefix — this is correct OpenAI behaviour, not a bug.
+The benchmark uses a direct-answer question to show the cleanest comparison.
+""",
     version="1.0.0",
 )
 
@@ -67,22 +78,51 @@ async def chat_with_cache(req: ChatRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
+@app.get("/warmup")
+async def warmup():
+    """
+    Pre-warms the OpenAI cache by calling the cached agent 3 times.
+    Run this BEFORE /benchmark or the live demo.
+    Watch the logs — cached_tokens should go 0 → 1024+ after the first call.
+    """
+    WARMUP_MESSAGE = "What is a good pre-workout meal?"
+    log.info("🔥 /warmup  pre-warming cache with 3 calls...")
+    results = []
+    for i in range(3):
+        r = run_cached_agent(WARMUP_MESSAGE)
+        results.append({"run": i + 1, "cached_tokens": r["cached_tokens"], "latency_ms": r["latency_ms"]})
+        log.info("  warmup %d/3  cached=%d  latency=%.0fms", i + 1, r["cached_tokens"], r["latency_ms"])
+    cache_hit = any(r["cached_tokens"] > 0 for r in results)
+    log.info("🔥 warmup complete — cache %s", "✅ HOT" if cache_hit else "❌ still cold — run /warmup again")
+    return {
+        "status": "✅ cache hot" if cache_hit else "❌ still cold — run /warmup again",
+        "runs":   results,
+    }
+
+
 @app.get("/benchmark")
 async def benchmark():
     """
-    Runs both agents 5x and compares latency, cost and cache performance.
+    Phase 1: all no-cache runs. Phase 2: all with-cache runs.
+    Separated so OpenAI cache state is clean for each group.
+    Run /warmup first to pre-warm the cache.
     """
     RUNS = 5
     log.info("▶ /benchmark  starting %d runs each...", RUNS)
 
+    # Phase 1 — no-cache: all runs together, no cross-contamination
+    log.info("  Phase 1: no-cache agent (%d runs)...", RUNS)
     no_cache_results = []
-    cached_results   = []
-
     for i in range(RUNS):
-        log.info("  Run %d/%d — no-cache...", i + 1, RUNS)
+        log.info("  no-cache %d/%d", i + 1, RUNS)
         no_cache_results.append(run_no_cache_agent(BENCHMARK_MESSAGE))
 
-        log.info("  Run %d/%d — with-cache...", i + 1, RUNS)
+    # Phase 2 — with-cache: all runs together, cache stays warm
+    log.info("  Phase 2: with-cache agent (%d runs)...", RUNS)
+    cached_results = []
+    for i in range(RUNS):
+        log.info("  with-cache %d/%d", i + 1, RUNS)
         cached_results.append(run_cached_agent(BENCHMARK_MESSAGE))
 
     def avg(results, key):
